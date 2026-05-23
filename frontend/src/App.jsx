@@ -11,13 +11,13 @@ export default function App() {
   const [actuatorSchedule, setActuatorSchedule] = useState([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState(null);
-  const [simState, setSimState] = useState("idle"); // idle | playing | paused | done
+  const [simState, setSimState] = useState("idle"); // idle | loading | playing | paused | done
   const [simTime, setSimTime] = useState(0);
   const [duration, setDuration] = useState(10);
   const [simError, setSimError] = useState(null);
 
-  const handleGenerate = useCallback(async () => {
-    if (!description.trim()) return;
+  const handleGenerate = useCallback(async (desc) => {
+    if (!desc.trim()) return;
     setIsGenerating(true);
     setError(null);
     setXml(null);
@@ -30,7 +30,7 @@ export default function App() {
       const res = await fetch("http://localhost:8000/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ description }),
+        body: JSON.stringify({ description: desc }),
       });
       const data = await res.json();
       if (data.error) {
@@ -45,7 +45,7 @@ export default function App() {
     } finally {
       setIsGenerating(false);
     }
-  }, [description]);
+  }, []);
 
   return (
     <div id="app-root">

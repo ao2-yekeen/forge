@@ -3,7 +3,6 @@ import * as THREE from "three";
 
 const BACKEND_WS = "ws://localhost:8000/ws/simulate";
 
-// MuJoCo geom type → Three.js geometry builder
 function makeGeometry(type, size) {
   switch (type) {
     case "box":
@@ -17,15 +16,16 @@ function makeGeometry(type, size) {
     case "plane":
       return new THREE.PlaneGeometry(10, 10);
     case "ellipsoid":
-      // approximate as sphere using first component
       return new THREE.SphereGeometry(size[0], 16, 16);
     default:
       return new THREE.BoxGeometry(0.1, 0.1, 0.1);
   }
 }
 
-// Geom types that need a +90° X rotation to align with MuJoCo Z-axis convention
-const NEEDS_BASE_ROT = new Set(["cylinder", "capsule", "plane"]);
+// Cylinder/capsule need +90° X rotation: Three.js axis is +Y, MuJoCo default is +Z.
+// Plane does NOT need this — its Three.js normal (+Z) already maps to MuJoCo +Z,
+// and the rootGroup -90° X correctly converts it to Three.js +Y (up/floor).
+const NEEDS_BASE_ROT = new Set(["cylinder", "capsule"]);
 
 export default function Viewport({
   xml,
@@ -50,8 +50,10 @@ export default function Viewport({
   const lastRealTimeRef = useRef(null);
   const simTimeRef = useRef(0);
   const simStateRef = useRef("idle");
+  const wsCompleteRef = useRef(false); // true once WS sends "done"
   const orbitRef = useRef({ theta: Math.PI / 4, phi: Math.PI / 3, radius: 5, target: new THREE.Vector3(0, 0, 0) });
   const dragRef = useRef(null);
+  const autoFramedRef = useRef(false);
 
   // Keep ref in sync with prop for use inside rAF
   simStateRef.current = simState;
@@ -62,7 +64,6 @@ export default function Viewport({
     const w = mount.clientWidth;
     const h = mount.clientHeight;
 
-    // Renderer
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(w, h);
     renderer.setPixelRatio(window.devicePixelRatio);
@@ -70,18 +71,15 @@ export default function Viewport({
     mount.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
-    // Scene
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0B0F1A);
     scene.fog = new THREE.Fog(0x0B0F1A, 20, 50);
     sceneRef.current = scene;
 
-    // Camera
     const camera = new THREE.PerspectiveCamera(50, w / h, 0.01, 200);
     cameraRef.current = camera;
     updateCameraFromOrbit();
 
-    // Ambient + directional light (scene-level, always present)
     const ambient = new THREE.AmbientLight(0x404060, 1.5);
     scene.add(ambient);
     const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
@@ -89,11 +87,9 @@ export default function Viewport({
     dirLight.castShadow = true;
     scene.add(dirLight);
 
-    // Grid helper (Y-up, MuJoCo ground is Z=0 → Y=0 after rotation)
     const grid = new THREE.GridHelper(10, 20, 0x1e2535, 0x1e2535);
     scene.add(grid);
 
-    // Render loop
     function animate() {
       rafRef.current = requestAnimationFrame(animate);
       tickSimulation();
@@ -101,7 +97,6 @@ export default function Viewport({
     }
     animate();
 
-    // Resize observer
     const ro = new ResizeObserver(() => {
       const w2 = mount.clientWidth;
       const h2 = mount.clientHeight;
@@ -131,7 +126,7 @@ export default function Viewport({
     cam.lookAt(target);
   }
 
-  // ---- Orbit controls (mouse drag) ----
+  // ---- Orbit controls ----
   useEffect(() => {
     const mount = mountRef.current;
 
@@ -146,15 +141,13 @@ export default function Viewport({
       dragRef.current.y = e.clientY;
       const orbit = orbitRef.current;
       if (dragRef.current.button === 0) {
-        // rotate
         orbit.theta -= dx * 0.01;
         orbit.phi = Math.max(0.1, Math.min(Math.PI - 0.1, orbit.phi + dy * 0.01));
       } else if (dragRef.current.button === 2) {
-        // pan
         const cam = cameraRef.current;
         const right = new THREE.Vector3();
         const up = new THREE.Vector3();
-        cam.getWorldDirection(new THREE.Vector3()); // force matrix update
+        cam.getWorldDirection(new THREE.Vector3());
         right.setFromMatrixColumn(cam.matrixWorld, 0).normalize();
         up.setFromMatrixColumn(cam.matrixWorld, 1).normalize();
         orbit.target.addScaledVector(right, -dx * 0.005 * orbit.radius * 0.1);
@@ -187,11 +180,16 @@ export default function Viewport({
   function clearBodies() {
     const scene = sceneRef.current;
     bodyGroupsRef.current.forEach((g) => scene.remove(g));
+    if (bodyGroupsRef.current.rootGroup) {
+      scene.remove(bodyGroupsRef.current.rootGroup);
+    }
     bodyGroupsRef.current = [];
     framesRef.current = [];
     frameIndexRef.current = 0;
+    wsCompleteRef.current = false;
     lastRealTimeRef.current = null;
     simTimeRef.current = 0;
+    autoFramedRef.current = false;
     onSimTime(0);
   }
 
@@ -204,9 +202,7 @@ export default function Viewport({
     const rootGroup = new THREE.Group();
     rootGroup.rotation.x = -Math.PI / 2;
     scene.add(rootGroup);
-    bodyGroupsRef.current.rootGroup = rootGroup;
 
-    // One Group per body — positioned in MuJoCo (Z-up) coords inside rootGroup
     const bodyGroups = bodyNames.map((name) => {
       const g = new THREE.Group();
       g.name = name;
@@ -232,15 +228,13 @@ export default function Viewport({
       mesh.castShadow = true;
       mesh.receiveShadow = true;
 
-      // Geom local position (MuJoCo coords, will be rotated by rootGroup)
       mesh.position.set(...geom.pos);
 
-      // Geom local quaternion: MuJoCo [w,x,y,z] → Three.js Quaternion(x,y,z,w)
+      // MuJoCo [w,x,y,z] → Three.js Quaternion(x,y,z,w)
       const [qw, qx, qy, qz] = geom.quat;
       const geomQuat = new THREE.Quaternion(qx, qy, qz, qw);
 
       if (NEEDS_BASE_ROT.has(geom.type)) {
-        // baseQuat aligns Three.js Y-axis with MuJoCo Z-axis
         const baseQuat = new THREE.Quaternion();
         baseQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
         mesh.quaternion.copy(geomQuat).multiply(baseQuat);
@@ -264,6 +258,23 @@ export default function Viewport({
     });
     simTimeRef.current = frame.time;
     onSimTime(frame.time);
+
+    // Auto-frame camera on first frame (skip worldbody at index 0)
+    if (!autoFramedRef.current && frame.bodies.length > 1) {
+      autoFramedRef.current = true;
+      const bodies = frame.bodies.slice(1);
+      const cx = bodies.reduce((s, b) => s + b.pos[0], 0) / bodies.length;
+      const cy = bodies.reduce((s, b) => s + b.pos[1], 0) / bodies.length;
+      const cz = bodies.reduce((s, b) => s + b.pos[2], 0) / bodies.length;
+      const spread = Math.max(
+        ...bodies.map((b) => Math.sqrt((b.pos[0]-cx)**2 + (b.pos[1]-cy)**2 + (b.pos[2]-cz)**2)),
+        0.5
+      );
+      // MuJoCo (x,y,z) Z-up → Three.js (x, z, -y) Y-up (rootGroup rotation.x = -PI/2)
+      orbitRef.current.target.set(cx, cz, -cy);
+      orbitRef.current.radius = Math.max(spread * 3.5, 2.0);
+      updateCameraFromOrbit();
+    }
   }
 
   // ---- Simulation playback tick (called from rAF) ----
@@ -280,7 +291,6 @@ export default function Viewport({
     lastRealTimeRef.current = now;
 
     simTimeRef.current += elapsed;
-    // Find the closest frame
     while (
       frameIndexRef.current < frames.length - 1 &&
       frames[frameIndexRef.current + 1].time <= simTimeRef.current
@@ -288,20 +298,25 @@ export default function Viewport({
       frameIndexRef.current++;
     }
     applyFrame(frames[frameIndexRef.current]);
-    if (frameIndexRef.current >= frames.length - 1) {
+
+    // Only mark done when WS streaming is complete and we've played all frames
+    if (wsCompleteRef.current && frameIndexRef.current >= frames.length - 1) {
       onSimStateChange("done");
     }
   }
 
   // ---- WebSocket simulation stream ----
-  const startSimulation = useCallback(() => {
+  // autoPlay=false: build scene + show frame 0 as static preview, stay "paused"
+  // autoPlay=true: start animating immediately
+  const startSimulation = useCallback((autoPlay = false) => {
     if (!xml) return;
     if (wsRef.current) {
       wsRef.current.close();
+      wsRef.current = null;
     }
     clearBodies();
-    onSimStateChange("playing");
     onSimError(null);
+    onSimStateChange("loading");
 
     const ws = new WebSocket(BACKEND_WS);
     wsRef.current = ws;
@@ -316,11 +331,22 @@ export default function Viewport({
         buildScene(msg.geoms, msg.body_names);
       } else if (msg.type === "frame") {
         framesRef.current.push(msg);
+        // Show initial pose as soon as the first frame arrives
+        if (framesRef.current.length === 1) {
+          applyFrame(framesRef.current[0]);
+          if (!autoPlay) {
+            onSimStateChange("paused");
+          } else {
+            lastRealTimeRef.current = null;
+            onSimStateChange("playing");
+          }
+        }
       } else if (msg.type === "done") {
-        frameIndexRef.current = 0;
-        simTimeRef.current = 0;
-        lastRealTimeRef.current = null;
-        // frames are buffered; playback continues via tickSimulation
+        wsCompleteRef.current = true;
+        // If still loading (no frames came), go idle
+        if (simStateRef.current === "loading") {
+          onSimStateChange("idle");
+        }
       } else if (msg.type === "error") {
         onSimError("Simulation error: " + msg.message);
         onSimStateChange("idle");
@@ -333,13 +359,32 @@ export default function Viewport({
     };
   }, [xml, duration, actuatorSchedule]);
 
+  // Ref so useEffect can call startSimulation without it being a dep
+  const startSimulationRef = useRef(startSimulation);
+  startSimulationRef.current = startSimulation;
+
+  // Auto-load scene whenever xml changes (after Generate)
+  useEffect(() => {
+    if (xml) {
+      startSimulationRef.current(false);
+    }
+  }, [xml]);
+
   const handlePlay = useCallback(() => {
-    if (simState === "idle" || simState === "done") {
-      startSimulation();
-    } else if (simState === "paused") {
+    if (simState === "paused") {
       lastRealTimeRef.current = null;
       onSimStateChange("playing");
+    } else if (simState === "done") {
+      // Rewind and replay from buffered frames
+      frameIndexRef.current = 0;
+      simTimeRef.current = 0;
+      lastRealTimeRef.current = null;
+      onSimTime(0);
+      onSimStateChange("playing");
+    } else if (simState === "idle") {
+      startSimulation(true);
     }
+    // "loading" → wait for scene to build; "playing" → already running
   }, [simState, startSimulation]);
 
   const handlePause = useCallback(() => {
@@ -347,10 +392,21 @@ export default function Viewport({
   }, [simState]);
 
   const handleRestart = useCallback(() => {
-    startSimulation();
+    if (framesRef.current.length > 0) {
+      // Rewind to initial pose without re-simulating
+      frameIndexRef.current = 0;
+      simTimeRef.current = 0;
+      lastRealTimeRef.current = null;
+      onSimTime(0);
+      applyFrame(framesRef.current[0]);
+      onSimStateChange("paused");
+    } else {
+      startSimulation(false);
+    }
   }, [startSimulation]);
 
   const hasXml = !!xml;
+  const isLoading = simState === "loading";
 
   return (
     <div className="viewport" ref={mountRef}>
@@ -378,18 +434,21 @@ export default function Viewport({
       {hasXml && (
         <>
           <div className="time-display">
-            {simTime.toFixed(2)}s
+            {isLoading ? "Loading..." : `${simTime.toFixed(2)}s`}
           </div>
           <div className="sim-controls">
-            {simState !== "playing" && (
-              <button className="sim-btn primary" onClick={handlePlay} disabled={!hasXml}>
-                {simState === "paused" ? "Resume" : simState === "done" ? "Replay" : "Play"}
+            {simState === "playing" ? (
+              <button className="sim-btn" onClick={handlePause}>Pause</button>
+            ) : (
+              <button
+                className="sim-btn primary"
+                onClick={handlePlay}
+                disabled={isLoading}
+              >
+                {simState === "done" ? "Replay" : simState === "paused" ? "Play" : "Play"}
               </button>
             )}
-            {simState === "playing" && (
-              <button className="sim-btn" onClick={handlePause}>Pause</button>
-            )}
-            <button className="sim-btn" onClick={handleRestart} disabled={!hasXml}>
+            <button className="sim-btn" onClick={handleRestart} disabled={isLoading}>
               Restart
             </button>
           </div>

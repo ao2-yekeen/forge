@@ -1,4 +1,5 @@
-import React from "react";
+import React, { useState } from "react";
+import ClarifyModal from "./ClarifyModal.jsx";
 
 export default function DescribePanel({
   description,
@@ -8,10 +9,20 @@ export default function DescribePanel({
   error,
   xml,
 }) {
+  const [showClarify, setShowClarify] = useState(false);
+  const [clarification, setClarification] = useState(null);
+
   const handleKey = (e) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-      onGenerate();
+      onGenerate(clarification?.clarified_description || description);
     }
+  };
+
+  const openClarify = () => setShowClarify(true);
+  const closeClarify = () => setShowClarify(false);
+  const saveClarify = (vals) => {
+    setClarification(vals);
+    setShowClarify(false);
   };
 
   return (
@@ -27,13 +38,25 @@ export default function DescribePanel({
         onKeyDown={handleKey}
       />
 
-      <button
-        className="generate-btn"
-        onClick={onGenerate}
-        disabled={isGenerating || !description.trim()}
-      >
-        {isGenerating ? "Generating..." : "Generate"}
-      </button>
+      <div style={{display:"flex",gap:8}}>
+        <button
+          className="generate-btn"
+          onClick={() => onGenerate(clarification?.clarified_description || description)}
+          disabled={isGenerating || !description.trim()}
+        >
+          {isGenerating ? "Generating..." : "Generate"}
+        </button>
+        <button className="generate-btn" onClick={openClarify} style={{background:"#1f2a33"}}>Clarify</button>
+      </div>
+
+      {clarification?.assumptions?.length > 0 && (
+        <div className="clarify-summary">
+          <strong>Assumptions</strong>
+          {clarification.assumptions.map((item) => (
+            <span key={item.key}>{item.label}: {item.value}</span>
+          ))}
+        </div>
+      )}
 
       {error && <div className="error-box">{error}</div>}
 
@@ -43,6 +66,14 @@ export default function DescribePanel({
           <pre>{xml}</pre>
         </details>
       )}
+
+      <ClarifyModal
+        isOpen={showClarify}
+        description={description}
+        onClose={closeClarify}
+        onSave={saveClarify}
+        initial={clarification}
+      />
     </div>
   );
 }
