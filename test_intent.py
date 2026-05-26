@@ -408,93 +408,185 @@ def validate_spec(spec: dict[str, Any]) -> dict[str, Any]:
 # ======================================================================
 # EXECUTOR
 # ======================================================================
+def execute_subtract(op: dict[str, Any], solids: dict[str, Any], result: BuildPart) -> None:
+    tool_id = op.get("tool")
+    tool = solids.get(tool_id)
+    if tool is None:
+        print(f"  ! Subtract: tool solid '{tool_id}' not found — skipping")
+        return
+    try:
+        add(tool, mode=Mode.SUBTRACT)
+    except Exception as e:
+        print(f"  ! Subtract failed: {e}")
 
 def execute_operation_spec(spec: dict[str, Any]):
     operations = spec["operations"]
-
     sketches: dict[str, dict[str, Any]] = {}
+    solids: dict[str, Any] = {}  # registry of named solids
     move_offsets = collect_move_offsets(operations)
-
+ 
     with BuildPart() as result:
         for index, op in enumerate(operations):
             op_type = op["type"]
-
             try:
                 if op_type == "Sketch":
                     sketch_id = op.get("id")
                     if not sketch_id:
                         raise ValueError("Sketch operation needs an id")
                     sketches[sketch_id] = op
-
+ 
                 elif op_type == "Extrude":
                     execute_extrude(op, sketches)
-
+                    solid_id = op.get("id")
+                    if solid_id:
+                        solids[solid_id] = result.solids()[-1] if result.solids() else None
+ 
                 elif op_type == "Revolve":
                     execute_revolve(op, sketches)
-
+                    solid_id = op.get("id")
+                    if solid_id:
+                        solids[solid_id] = result.solids()[-1] if result.solids() else None
+ 
                 elif op_type == "Hole":
-                    execute_hole(op)
-
+                    execute_hole(op, result)
+ 
                 elif op_type == "CounterBore":
-                    execute_counterbore(op)
-
+                    execute_counterbore(op, result)
+ 
                 elif op_type == "Countersink":
-                    execute_countersink(op)
-
+                    execute_countersink(op, result)
+ 
                 elif op_type == "Thread":
-                    execute_thread_approx(op)
-
+                    execute_thread_approx(op, result)
+ 
                 elif op_type == "Fillet":
                     execute_fillet(op, result)
-
+ 
                 elif op_type == "Chamfer":
                     execute_chamfer(op, result)
-
+ 
                 elif op_type == "Shell":
                     execute_shell(op, result)
-
+ 
+                elif op_type == "Subtract":
+                    execute_subtract(op, solids, result)
+ 
+                elif op_type == "Union":
+                    pass  # build123d auto-unions within BuildPart context
+ 
                 elif op_type in {
-                    "HexBolt",
-                    "HexNut",
-                    "Washer",
-                    "SocketHeadBolt",
-                    "SpurGear",
-                    "BallBearing",
-                    "CompressionSpring",
-                    "VBelt",
+                    "HexBolt", "HexNut", "Washer", "SocketHeadBolt",
+                    "SpurGear", "BallBearing", "CompressionSpring", "VBelt",
                 }:
                     solid = make_standard_part(op)
                     solid_id = op.get("id")
                     offset = move_offsets.get(solid_id, (0, 0, 0))
                     add(solid.moved(Location(offset)))
-
+                    if solid_id:
+                        solids[solid_id] = solid
+ 
                 elif op_type in {
-                    "Move",
-                    "Rotate",
-                    "Mirror",
-                    "Scale",
-                    "LinearArray",
-                    "CircularArray",
-                    "BoltCircle",
-                    "Union",
-                    "Subtract",
-                    "Intersect",
-                    "Sweep",
-                    "Loft",
-                    "Thicken",
-                    "Draft",
-                    "Rib",
-                    "Knurl",
+                    "Move", "Rotate", "Mirror", "Scale",
+                    "LinearArray", "CircularArray", "BoltCircle",
+                    "Intersect", "Sweep", "Loft", "Thicken",
+                    "Draft", "Rib", "Knurl",
                 }:
-                    print(f"  ! Skipping unsupported executor op for now: {op_type}")
-
+                    print(f"  ! Skipping unsupported op: {op_type}")
+ 
                 else:
                     raise ValueError(f"Unhandled operation: {op_type}")
-
+ 
             except Exception as exc:
-                raise RuntimeError(f"Operation {index} failed: {op}") from exc
-
+                raise RuntimeError(f"Operation {index} ({op_type}) failed: {exc}") from exc
+ 
     return result.part
+
+# def execute_operation_spec(spec: dict[str, Any]):
+#     operations = spec["operations"]
+
+#     sketches: dict[str, dict[str, Any]] = {}
+#     move_offsets = collect_move_offsets(operations)
+
+#     with BuildPart() as result:
+#         for index, op in enumerate(operations):
+#             op_type = op["type"]
+
+#             try:
+#                 if op_type == "Sketch":
+#                     sketch_id = op.get("id")
+#                     if not sketch_id:
+#                         raise ValueError("Sketch operation needs an id")
+#                     sketches[sketch_id] = op
+
+#                 elif op_type == "Extrude":
+#                     execute_extrude(op, sketches)
+
+#                 elif op_type == "Revolve":
+#                     execute_revolve(op, sketches)
+
+#                 elif op_type == "Hole":
+#                     execute_hole(op)
+
+#                 elif op_type == "CounterBore":
+#                     execute_counterbore(op)
+
+#                 elif op_type == "Countersink":
+#                     execute_countersink(op)
+
+#                 elif op_type == "Thread":
+#                     execute_thread_approx(op)
+
+#                 elif op_type == "Fillet":
+#                     execute_fillet(op, result)
+
+#                 elif op_type == "Chamfer":
+#                     execute_chamfer(op, result)
+
+#                 elif op_type == "Shell":
+#                     execute_shell(op, result)
+
+#                 elif op_type in {
+#                     "HexBolt",
+#                     "HexNut",
+#                     "Washer",
+#                     "SocketHeadBolt",
+#                     "SpurGear",
+#                     "BallBearing",
+#                     "CompressionSpring",
+#                     "VBelt",
+#                 }:
+#                     solid = make_standard_part(op)
+#                     solid_id = op.get("id")
+#                     offset = move_offsets.get(solid_id, (0, 0, 0))
+#                     add(solid.moved(Location(offset)))
+
+#                 elif op_type in {
+#                     "Move",
+#                     "Rotate",
+#                     "Mirror",
+#                     "Scale",
+#                     "LinearArray",
+#                     "CircularArray",
+#                     "BoltCircle",
+#                     "Union",
+#                     "Subtract",
+#                     "Intersect",
+#                     "Sweep",
+#                     "Loft",
+#                     "Thicken",
+#                     "Draft",
+#                     "Rib",
+#                     "Knurl",
+#                 }:
+#                     print(f"  ! Skipping unsupported executor op for now: {op_type}")
+
+#                 else:
+#                     raise ValueError(f"Unhandled operation: {op_type}")
+
+#             except Exception as exc:
+#                 raise RuntimeError(f"Operation {index} failed: {op}") from exc
+
+#     return result.part
 
 
 def collect_move_offsets(operations: list[dict[str, Any]]) -> dict[str, tuple[float, float, float]]:
@@ -572,21 +664,52 @@ def execute_extrude(op: dict[str, Any], sketches: dict[str, dict[str, Any]]) -> 
     extrude(amount=amount, mode=mode)
 
 
+# def execute_revolve(op: dict[str, Any], sketches: dict[str, dict[str, Any]]) -> None:
+#     sketch_id = op.get("sketch")
+#     sketch = sketches.get(sketch_id)
+
+#     if not sketch:
+#         raise ValueError(f"Missing sketch: {sketch_id}")
+
+#     with BuildSketch(get_plane(sketch.get("plane", "XZ"))):
+#         render_profiles(sketch)
+
+#     axis = get_axis(op.get("axis", "Z"))
+#     angle = float(op.get("angle", 360))
+
+#     revolve(axis=axis, revolution_arc=angle)
 def execute_revolve(op: dict[str, Any], sketches: dict[str, dict[str, Any]]) -> None:
     sketch_id = op.get("sketch")
     sketch = sketches.get(sketch_id)
-
     if not sketch:
         raise ValueError(f"Missing sketch: {sketch_id}")
+    profiles = sketch.get("profiles", [])
+    if not profiles:
+        raise ValueError("Sketch has no profiles")
 
-    with BuildSketch(get_plane(sketch.get("plane", "XZ"))):
-        render_profiles(sketch)
-
-    axis = get_axis(op.get("axis", "Z"))
-    angle = float(op.get("angle", 360))
-
-    revolve(axis=axis, revolution_arc=angle)
-
+    # Build in isolated context then add() into active BuildPart
+    with BuildPart() as solo:
+        with BuildSketch(get_plane(sketch.get("plane", "XZ"))):
+            for profile in profiles:
+                p_op = profile.get("op")
+                if p_op == "Rectangle":
+                    w = num(profile, "width", 100)
+                    h = num(profile, "height", 20)
+                    with Locations((0, h / 2)):
+                        Rectangle(w, h, align=(Align.CENTER, Align.CENTER))
+                elif p_op == "Circle":
+                    r = num(profile, "radius", 25)
+                    with Locations((0, r)):
+                        Circle(r)
+                elif p_op == "CustomProfile":
+                    pts = [(float(x), float(y)) for x, y in profile.get("points", [])]
+                    with BuildLine():
+                        for i in range(len(pts) - 1):
+                            Line(pts[i], pts[i + 1])
+                        Line(pts[-1], pts[0])
+                    make_face()
+        revolve(axis=get_axis(op.get("axis", "Z")), revolution_arc=float(op.get("angle", 360)))
+    add(solo.part)
 
 def render_profiles(sketch: dict[str, Any]) -> None:
     profiles = sketch.get("profiles", [])
@@ -694,34 +817,41 @@ def render_profile(profile: dict[str, Any]) -> None:
 # FEATURES
 # ======================================================================
 
-def execute_hole(op: dict[str, Any]) -> None:
+def execute_hole(op: dict[str, Any], result: BuildPart) -> None:
     diameter = num(op, "diameter", 4.2)
-    depth = op.get("depth")
-
-    if depth is None:
-        depth = 1000
-    else:
-        depth = float(depth)
-
+    depth = float(op.get("depth", 1000))
     pattern = op.get("pattern")
+    position = op.get("position")
+    face_str = str(op.get("face", "top")).lower()
 
-    if isinstance(pattern, dict) and pattern.get("type") == "grid":
-        with GridLocations(
-            num(pattern, "x_spacing", 40),
-            num(pattern, "y_spacing", 40),
-            integer(pattern, "x_count", 2),
-            integer(pattern, "y_count", 2),
-        ):
+    if   face_str == "top":    tf = result.faces().sort_by(Axis.Z)[-1]
+    elif face_str == "bottom": tf = result.faces().sort_by(Axis.Z)[0]
+    elif face_str == "front":  tf = result.faces().sort_by(Axis.Y)[-1]
+    elif face_str == "back":   tf = result.faces().sort_by(Axis.Y)[0]
+    elif face_str == "left":   tf = result.faces().sort_by(Axis.X)[0]
+    elif face_str == "right":  tf = result.faces().sort_by(Axis.X)[-1]
+    else:                      tf = result.faces().sort_by(Axis.Z)[-1]
+
+    if pattern and isinstance(pattern, dict):
+        pt = pattern.get("type")
+        if pt == "grid":
+            with GridLocations(
+                num(pattern, "x_spacing", 40),
+                num(pattern, "y_spacing", 40),
+                integer(pattern, "x_count", 2),
+                integer(pattern, "y_count", 2),
+            ):
+                Hole(radius=diameter / 2, depth=depth)
+        elif pt == "bolt_circle":
+            with PolarLocations(num(pattern, "pcd", 40) / 2, integer(pattern, "count", 4)):
+                Hole(radius=diameter / 2, depth=depth)
+        else:
             Hole(radius=diameter / 2, depth=depth)
-    elif isinstance(pattern, dict) and pattern.get("type") == "bolt_circle":
-        pcd = num(pattern, "pcd", 40)
-        count = integer(pattern, "count", 4)
-
-        with PolarLocations(pcd / 2, count):
+    elif position:
+        with Locations((float(position[0]), float(position[1]), 0)):
             Hole(radius=diameter / 2, depth=depth)
     else:
         Hole(radius=diameter / 2, depth=depth)
-
 
 def execute_counterbore(op: dict[str, Any]) -> None:
     hole_d = num(op, "hole_d", 5)
